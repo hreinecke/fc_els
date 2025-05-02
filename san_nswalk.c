@@ -38,12 +38,8 @@ typedef uint8_t u8;
 #include "scsi_bsg_fc.h"
 
 #include "fc_nameserver.h"
-typedef uint64_t fc_wwn_t;    /* world-wide name */
-typedef uint32_t fc_fid_t;   /* fabric address */
 
-extern void tdestroy(void *, void (*)(void *));
-
-static const char *cmdname = "san_resync";
+static const char *cmdname = "san_nswalk";
 
 #define DEF_ELS_TIMEOUT 20      /* Default ELS timeout: 20 seconds */
 #define MAX_SENSE_LEN	96	/* SCSI_SENSE_BUFFERSIZE */
@@ -52,14 +48,6 @@ static const char *cmdname = "san_resync";
 #define FP_LEN_DEF	32	/* default ping payload length */
 #define FP_LEN_PAD	32	/* extra length for response */
 
-/* Check if it is WKA according to FC-FS-3 Rev 1.00 Clause 11 Table 30 */
-#define FCID_IS_WKA(i) ((((i) >= 0xfffc01) && ((i) <= 0xfffcfe)) || \
-			(((i) >= 0xfffff0) && ((i) <= 0xffffff)))
-
-#define FC_WKA_FABRIC_CONTROLLER ((fc_fid_t)0xfffffd)
-#define FC_WKA_DIRECTORY_SERVICE ((fc_fid_t)0xfffffc)
-#define FC_WKA_UNZONED_NAME_SERVER ((fc_fid_t)0xfffffa)
-
 static int els_timeout = DEF_ELS_TIMEOUT;
 static int fp_hba = -1;	/* number of fc_host to be used */
 static void *root = NULL;
@@ -67,25 +55,6 @@ static int system_errors;
 static int els_errors;
 static int port_errors;
 static int verbose;
-
-#define hton24(p, v)				\
-	do {					\
-		p[0] = (((v) >> 16) & 0xFF);	\
-		p[1] = (((v) >> 8) & 0xFF);	\
-		p[2] = ((v) & 0xFF);		\
-	} while (0)
-
-#define hton64(p, v)					\
-	do {						\
-		p[0] = (u_char) ((v) >> 56) & 0xFF;	\
-		p[1] = (u_char) ((v) >> 48) & 0xFF;	\
-		p[2] = (u_char) ((v) >> 40) & 0xFF;	\
-		p[3] = (u_char) ((v) >> 32) & 0xFF;	\
-		p[4] = (u_char) ((v) >> 24) & 0xFF;	\
-		p[5] = (u_char) ((v) >> 16) & 0xFF;	\
-		p[6] = (u_char) ((v) >> 8) & 0xFF;	\
-		p[7] = (u_char) (v) & 0xFF;		\
-	} while (0)
 
 static void
 fp_usage()
@@ -154,117 +123,6 @@ fp_options(int argc, char *argv[])
 		fp_usage();
 
 	return;
-}
-
-/*
- * Read fc_remote_port attribute
- */
-int
-fc_rport_get_attr(const char *rport, const char *attr,
-		  char *value, int value_len)
-{
-	char attrpath[256];
-	int fd, count;
-
-	sprintf(attrpath, "/sys/class/fc_remote_ports/%s/%s", rport, attr);
-	fd = open(attrpath, O_RDONLY);
-	if (fd < 0) {
-		fprintf(stderr, "%s: Failed to open %s: %m\n",
-			rport, attrpath);
-		return -errno;
-	}
-	count = read(fd, value, value_len);
-	if (count < 0) {
-		fprintf(stderr, "%s: Cannot read from %s: %m\n",
-			rport, attrpath);
-	} else if (value[count - 1] == '\n') {
-		value[count - 1] = '\0';
-		count--;
-	}
-	close(fd);
-	return count;
-}
-
-/*
- * Lookup specified adapter from sysfs
- */
-static fc_fid_t
-fp_find_hba(int hba_num)
-{
-	fc_fid_t did = (fc_fid_t)0;
-	char attrpath[256], attrvalue[512], *endptr;
-	int fd;
-	ssize_t count;
-
-	sprintf(attrpath, "/sys/class/fc_host/host%d/port_id", hba_num);
-	fd = open(attrpath, O_RDONLY);
-	if (fd < 0) {
-		fprintf(stderr, "host%d not found\n", hba_num);
-		return did;
-	}
-	count = read(fd, attrvalue, sizeof(attrvalue));
-	if (count < 0) {
-		fprintf(stderr, "host%d: Cannot read from %s: %d\n",
-			hba_num, attrpath, errno);
-		return did;
-	}
-	close(fd);
-	did = strtoull(attrvalue, &endptr, 16);
-	if (attrvalue == endptr) {
-		fprintf(stderr, "host%d: Invalid Port ID %s\n",
-			hba_num, attrvalue);
-		did = (fc_fid_t)0;
-	}
-	return did;
-}
-
-static int
-fp_find_did(int hba_num, fc_fid_t did)
-{
-	DIR *dirp;
-	struct dirent *dentry;
-	int tmp_hba, tmp_bus, tmp_rport, rport_num = -1;
-	char attrvalue[512], *endptr;
-	fc_fid_t tmp_did = (fc_fid_t)0;
-	ssize_t count;
-
-	dirp = opendir("/sys/class/fc_remote_ports");
-	while ((dentry = readdir(dirp)) != NULL) {
-		if (strncmp(dentry->d_name, "rport-", 6))
-			continue;
-		if (sscanf(dentry->d_name, "rport-%d:%d-%d",
-			   &tmp_hba, &tmp_bus, &tmp_rport) != 3)
-			continue;
-		if (tmp_hba != hba_num)
-			continue;
-		if (tmp_bus != 0) {
-			fprintf(stderr, "%s: invalid bus number %d\n",
-				dentry->d_name, tmp_bus);
-			system_errors++;
-			continue;
-		}
-
-		count = fc_rport_get_attr(dentry->d_name, "port_id",
-					  attrvalue, sizeof(attrvalue));
-		if (count < 0) {
-			system_errors++;
-			break;
-		}
-
-		tmp_did = strtoull(attrvalue, &endptr, 16);
-		if (attrvalue == endptr) {
-			fprintf(stderr, "%s: Invalid Port ID %s\n",
-				dentry->d_name, attrvalue);
-			tmp_did = (fc_fid_t)0;
-			system_errors++;
-		}
-		if (did == tmp_did) {
-			rport_num = tmp_rport;
-			break;
-		}
-	}
-	closedir(dirp);
-	return rport_num;
 }
 
 /*
@@ -377,51 +235,6 @@ fp_ns_get_device_list(int hba_num, uint32_t op, fc_wwn_t wwn,
 
 	close(fp_rport_fd);
 	return 0;
-}
-
-struct rport_type_t {
-	int hba;
-	int rport;
-	fc_fid_t did;
-	fc_wwn_t wwpn;
-	fc_wwn_t wwnn;
-};
-
-static int
-fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
-		    struct rport_type_t *rport)
-{
-	unsigned char response[4096];
-	size_t resp_len;
-	int rc;
-
-	resp_len = sizeof(response);
-	memset(response, 0, sizeof(response));
-	rc = fp_ns_get_nxt(hba_num, fd, start_did, response, &resp_len);
-	if (rc == 0) {
-		rport->rport = -1;
-		if (resp_len > 28) {
-			rport->hba = hba_num;
-			rport->did = ((response[17] << 16) & 0xff0000) |
-				((response[18] << 8) & 0x00ff00) |
-				(response[19] & 0x0000ff);
-			rport->wwpn = ((uint64_t)response[20] << 56) |
-				((uint64_t)response[21] << 48) |
-				((uint64_t)response[22] << 40) |
-				((uint64_t)response[23] << 32) |
-				((uint64_t)response[24] << 24) |
-				((uint64_t)response[25] << 16) |
-				((uint64_t)response[26] <<  8) |
-				((uint64_t)response[27]);
-		} else {
-			fprintf(stderr, "host%d: GA_NXT response len %d\n",
-				hba_num, (int)resp_len);
-			els_errors++;
-			rport->did = 0;
-			rport->wwpn = 0;
-		}
-	}
-	return rc;
 }
 
 static int

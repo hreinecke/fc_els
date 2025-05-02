@@ -1,3 +1,22 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/types.h>
+#include <linux/bsg.h>
+
+typedef uint8_t u8;
+#include <scsi/sg.h>
+
+#include "fc_gs.h"
+#include "fc_ns.h"
+#include "scsi_bsg_fc.h"
+#include "fc_nameserver.h"
+
 /*
  * Lookup ID from port name or node name.
  */
@@ -22,8 +41,7 @@ fp_ns_get_id(int hba_num, uint32_t op, fc_wwn_t wwn,
 	if (wka_port < 0) {
 		fprintf(stderr, "host%d: No remote port found for WKA %06lx\n",
 		       hba_num, (unsigned long)FC_WKA_DIRECTORY_SERVICE);
-		system_errors++;
-		return ENXIO;
+		return -ENXIO;
 	}
 
 	sprintf(bsg_dev, "/dev/bsg/rport-%d:0-%d", hba_num, wka_port);
@@ -31,8 +49,7 @@ fp_ns_get_id(int hba_num, uint32_t op, fc_wwn_t wwn,
 	if (fp_rport_fd < 0) {
 		fprintf(stderr, "host%d: Cannot open bsg device %s: %s\n",
 			hba_num, bsg_dev, strerror(errno));
-		system_errors++;
-		return errno;
+		return -errno;
 	}
 	memset((char *)&cdb, 0, sizeof(cdb));
 	memset(&ct, 0, sizeof(ct));
@@ -70,8 +87,7 @@ fp_ns_get_id(int hba_num, uint32_t op, fc_wwn_t wwn,
 			op == FC_NS_GID_PN ? "GID_PN" : "GID_NN",
 			strerror(errno));
 		close(fp_rport_fd);
-		system_errors++;
-		return errno;
+		return -errno;
 	}
 
 	cmd = ((response[8]<<8) | response[9]) & 0xffff;
@@ -82,13 +98,11 @@ fp_ns_get_id(int hba_num, uint32_t op, fc_wwn_t wwn,
 			fprintf(stderr, "host%d: %s rejected, "
 				"not registered\n", hba_num,
 				op == FC_NS_GID_PN ? "GID_PN" : "GID_NN");
-			port_errors++;
 		} else {
 			fprintf(stderr, "host%d: %s rejected, "
 				"reason %02x/%02x\n", hba_num,
 				op == FC_NS_GID_PN ? "GID_PN" : "GID_NN",
 				response[13], response[14]);
-			els_errors++;
 		}
 		close(fp_rport_fd);
 		*resp_len = 0;
@@ -98,7 +112,6 @@ fp_ns_get_id(int hba_num, uint32_t op, fc_wwn_t wwn,
 			op == FC_NS_GID_PN ? "GID_PN" : "GID_NN", cmd);
 		close(fp_rport_fd);
 		*resp_len = 0;
-		els_errors++;
 		return 0;
 	}
 
@@ -157,7 +170,6 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	if (rc < 0) {
 		fprintf(stderr, "host%d: GA_NXT error: %s\n",
 			hba_num, strerror(errno));
-		system_errors++;
 		return rc;
 	}
 
@@ -167,12 +179,10 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 			fprintf(stderr, "host%d: GA_NXT rejected, "
 				"reason %02x/%02x\n",
 				hba_num, response[13], response[14]);
-			els_errors++;
 			rc = EAGAIN;
 		} else {
 			fprintf(stderr, "host%d: GA_NXT result %x\n",
 				hba_num, cmd);
-			els_errors++;
 			rc = ECOMM;
 		}
 	} else {
@@ -202,4 +212,39 @@ fp_lookup_target_by_wwpn(int hba_num, unsigned long long wwpn)
 	}
 
 	return did;
+}
+
+int fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
+			struct rport_type_t *rport)
+{
+	unsigned char response[4096];
+	size_t resp_len;
+	int rc;
+
+	resp_len = sizeof(response);
+	memset(response, 0, sizeof(response));
+	rc = fp_ns_get_nxt(hba_num, fd, start_did, response, &resp_len);
+	if (rc == 0) {
+		rport->rport = -1;
+		if (resp_len > 28) {
+			rport->hba = hba_num;
+			rport->did = ((response[17] << 16) & 0xff0000) |
+				((response[18] << 8) & 0x00ff00) |
+				(response[19] & 0x0000ff);
+			rport->wwpn = ((uint64_t)response[20] << 56) |
+				((uint64_t)response[21] << 48) |
+				((uint64_t)response[22] << 40) |
+				((uint64_t)response[23] << 32) |
+				((uint64_t)response[24] << 24) |
+				((uint64_t)response[25] << 16) |
+				((uint64_t)response[26] <<  8) |
+				((uint64_t)response[27]);
+		} else {
+			fprintf(stderr, "host%d: GA_NXT response len %d\n",
+				hba_num, (int)resp_len);
+			rport->did = 0;
+			rport->wwpn = 0;
+		}
+	}
+	return rc;
 }
