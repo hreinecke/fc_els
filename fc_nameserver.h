@@ -39,6 +39,8 @@ struct rport_type_t {
 	fc_wwn_t wwnn;
 };
 
+int fc_rport_get_attr(const char *rport, const char *attr,
+		      char *value, int value_len);
 fc_fid_t fp_lookup_target_by_wwpn(int hba_num, unsigned long long wwpn);
 int fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 			struct rport_type_t *rport);

@@ -45,9 +45,8 @@ fc_fid_t fp_find_hba(int hba_num)
 /*
  * Read fc_remote_port attribute
  */
-static int
-fc_rport_get_attr(const char *rport, const char *attr,
-		  char *value, int value_len)
+int fc_rport_get_attr(const char *rport, const char *attr,
+		      char *value, int value_len)
 {
 	char attrpath[256];
 	int fd, count;
