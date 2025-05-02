@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <linux/types.h>
 #include <linux/bsg.h>
+#include <netinet/in.h>
 
 typedef uint8_t u8;
 #include <scsi/sg.h>
