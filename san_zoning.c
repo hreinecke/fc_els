@@ -163,10 +163,10 @@ fp_gs_gfez(int hba_num)
 	int fp_rport_fd;
 	int cmd, rc = 0;
 
-	wka_port = fp_find_did(hba_num, FC_WKA_UNZONED_NAME_SERVER);
+	wka_port = fp_find_did(hba_num, FC_WKA_MANAGEMENT_SERVICE);
 	if (wka_port < 0) {
 		fprintf(stderr, "host%d: No remote port found for WKA %06lx\n",
-		       hba_num, (unsigned long)FC_WKA_UNZONED_NAME_SERVER);
+		       hba_num, (unsigned long)FC_WKA_MANAGEMENT_SERVICE);
 		return ENXIO;
 	}
 

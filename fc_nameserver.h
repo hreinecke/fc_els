@@ -10,7 +10,7 @@ typedef uint32_t fc_fid_t;   /* fabric address */
 
 #define FC_WKA_FABRIC_CONTROLLER ((fc_fid_t)0xfffffd)
 #define FC_WKA_DIRECTORY_SERVICE ((fc_fid_t)0xfffffc)
-#define FC_WKA_UNZONED_NAME_SERVER ((fc_fid_t)0xfffffa)
+#define FC_WKA_MANAGEMENT_SERVICE ((fc_fid_t)0xfffffa)
 
 #define hton24(p, v)				\
 	do {					\
