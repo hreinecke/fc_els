@@ -1,18 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright(c) 2007 Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Maintained at www.Open-FCoE.org
  */
@@ -45,13 +33,14 @@ struct fc_ct_hdr {
 #define	FC_CT_HDR_LEN	16	/* expected sizeof (struct fc_ct_hdr) */
 
 enum fc_ct_rev {
-	FC_CT_REV = 1		/* common transport revision */
+	FC_CT_REV = 3		/* common transport revision */
 };
 
 /*
  * ct_fs_type values.
  */
 enum fc_ct_fs_type {
+	FC_FST_EVENT =	0xf4,	/* event service */
 	FC_FST_ALIAS =	0xf8,	/* alias service */
 	FC_FST_MGMT =	0xfa,	/* management service */
 	FC_FST_TIME =	0xfb,	/* time service */
