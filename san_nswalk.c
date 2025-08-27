@@ -57,7 +57,7 @@ static const char *cmdname = "san_resync";
 
 #define FC_WKA_FABRIC_CONTROLLER ((fc_fid_t)0xfffffd)
 #define FC_WKA_DIRECTORY_SERVICE ((fc_fid_t)0xfffffc)
-#define FC_WKA_UNZONED_NAME_SERVER ((fc_fid_t)0xfffffa)
+#define FC_WKA_MANAGEMENT_SERVER ((fc_fid_t)0xfffffa)
 
 static int els_timeout = DEF_ELS_TIMEOUT;
 static int fp_hba = -1;	/* number of fc_host to be used */
