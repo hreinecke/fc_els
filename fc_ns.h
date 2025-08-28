@@ -38,14 +38,26 @@
  */
 enum fc_ns_req {
 	FC_NS_GA_NXT =	0x0100,		/* get all next */
-	FC_NS_GI_A =	0x0101,		/* get identifiers - scope */
+	FC_NS_GID_A =	0x0101,		/* get identifiers - scope */
 	FC_NS_GPN_ID =	0x0112,		/* get port name by ID */
 	FC_NS_GNN_ID =	0x0113,		/* get node name by ID */
+	FC_NS_GCS_ID =	0x0114,		/* get class of service */
+	FC_NS_GFT_ID =	0x0117,		/* get fc-4 type */
 	FC_NS_GSPN_ID = 0x0118,		/* get symbolic port name */
+	FC_NS_GPT_ID =	0x011a,		/* get port type */
+	FC_NS_GIPP_ID =	0x011b,		/* obsolete */
+	FC_NS_GFPN_ID =	0x011c,		/* get fabric port name - port identifier */
+	FC_NS_GHA_ID =	0x011d,		/* get hard address - port identifier */
+	FC_NS_GFF_ID =	0x011f,		/* get fc-4 type for ID */
 	FC_NS_GID_PN =	0x0121,		/* get ID for port name */
 	FC_NS_GID_NN =	0x0131,		/* get IDs for node name */
+	FC_NS_GPN_NN =	0x0132,		/* get port names for node name */
+	FC_NS_GSNN_NN =	0x0139,		/* get symbolic node name */
 	FC_NS_GID_FT =	0x0171,		/* get IDs by FC4 type */
 	FC_NS_GPN_FT =	0x0172,		/* get port names by FC4 type */
+	FC_NS_GNN_FT =	0x0173,		/* get port names by FC4 features */
+	FC_NS_GNN_FF =	0x0180,		/* get node names by FC4 features */
+	FC_NS_GPN_FF =	0x0181,		/* get port names by FC4 features */
 	FC_NS_GID_PT =	0x01a1,		/* get IDs by port type */
 	FC_NS_RPN_ID =	0x0212,		/* reg port name for ID */
 	FC_NS_RNN_ID =	0x0213,		/* reg node name for ID */

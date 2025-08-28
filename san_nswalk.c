@@ -198,6 +198,91 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	return rc;
 }
 
+static int
+fp_ns_gnn_ff(int hba_num, int fd, uint8_t fc4_type, uint8_t fc4_feat,
+	      unsigned char *response, size_t resp_len)
+{
+	struct ct_gnn_ff {
+		struct fc_ct_hdr hdr;
+		uint8_t rsvd1;
+		uint8_t domain_id;
+		uint8_t area_id;
+		uint8_t rsvd2[3];
+		uint8_t fc4_feat;
+		uint8_t fc4_type;
+	} ct;
+	struct fc_ct_hdr *acc, *rej;
+	struct fc_bsg_request cdb;
+	struct fc_bsg_reply reply;
+	struct sg_io_v4 sg_io;
+	size_t actual_len;
+	int cmd, rc = 0;
+
+	memset((char *)&cdb, 0, sizeof(cdb));
+	memset(&ct, 0, sizeof(ct));
+	ct.hdr.ct_rev = FC_CT_REV;
+	ct.hdr.ct_fs_type = FC_FST_MGMT;
+	ct.hdr.ct_fs_subtype = FC_MS_SUBTYPE_UNZONE;
+	ct.hdr.ct_options = 0;
+	ct.hdr.ct_cmd = htons(FC_NS_GNN_FF);
+	ct.hdr.ct_mr_size = htons(resp_len / 8);
+	ct.fc4_type = fc4_type;
+	ct.fc4_feat = fc4_feat;
+	cdb.msgcode = FC_BSG_RPT_CT;
+	memcpy(&cdb.rqst_data.r_ct.preamble_word0, &ct.hdr,
+	       3 * sizeof(uint32_t));
+
+	sg_io.guard = 'Q';
+	sg_io.protocol = BSG_PROTOCOL_SCSI;
+	sg_io.subprotocol = BSG_SUB_PROTOCOL_SCSI_TRANSPORT;
+	sg_io.request_len = sizeof(cdb);
+	sg_io.request = (uintptr_t)&cdb;
+	sg_io.dout_xfer_len = sizeof(ct);
+	sg_io.dout_xferp = (uintptr_t)&ct;
+	sg_io.din_xfer_len = resp_len;
+	sg_io.din_xferp = (uintptr_t)response;
+	sg_io.max_response_len = sizeof(reply);
+	sg_io.response = (uintptr_t)&reply;
+	sg_io.timeout = 1000;	/* millisecond */
+	memset(&reply, 0, sizeof(reply));
+	memset(response, 0, resp_len);
+
+	rc = ioctl(fd, SG_IO, &sg_io);
+	if (rc < 0) {
+		fprintf(stderr, "host%d: GA_NXT error: %s\n",
+			hba_num, strerror(errno));
+		return -errno;
+	}
+
+	acc = (struct fc_ct_hdr *)response;
+	cmd = htons(acc->ct_cmd);
+	if (cmd != FC_FS_ACC) {
+		if (cmd == FC_FS_RJT) {
+			rej = (struct fc_ct_hdr *)response;
+			fprintf(stderr, "host%d: GA_NXT rejected, "
+				"reason %02x/%02x\n",
+				hba_num, rej->ct_reason, rej->ct_explan);
+			rc = -EAGAIN;
+		} else {
+			fprintf(stderr, "host%d: GA_NXT result %x\n",
+				hba_num, cmd);
+			rc = -ECOMM;
+		}
+	} else {
+		unsigned int residual = htons(acc->ct_mr_size) * 8;
+
+		if (residual > 0)
+			fprintf(stderr, "host%d: GA_NXT missing %u bytes\n",
+				hba_num, residual);
+		actual_len = reply.reply_payload_rcv_len;
+		if (actual_len < resp_len)
+			rc = actual_len * 8;
+		else
+			rc = resp_len;
+	}
+	return rc;
+}
+
 struct rport_type_t {
 	int hba;
 	int rport;
@@ -332,6 +417,156 @@ walk_ns(int hba_num, fc_fid_t hba_did)
 	return rc;
 }
 
+static int
+fp_lookup_nvme_hosts(int hba_num, int fd)
+{
+	unsigned char response[4096], *pn, *nn;
+	char spn[256];
+	size_t resp_len;
+	int rc;
+
+	resp_len = sizeof(response);
+	memset(response, 0, sizeof(response));
+	rc = fp_ns_gnn_ff(hba_num, fd, 0x28, 0x02, response, resp_len);
+	if (rc > 0) {
+		int len = rc;
+		unsigned char *acc_iu;
+
+		acc_iu = response + sizeof(struct fc_ct_hdr);
+		len -= sizeof(struct fc_ct_hdr);
+		while (len) {
+			uint8_t control = acc_iu[0];
+			uint32_t did;
+
+			acc_iu++;
+			did = ntoh24(acc_iu);
+			printf("host%d: nvme host id %06lx\n",
+			       hba_num, did);
+			acc_iu += 3;
+			len -= 4;
+			if ((control & 0x4f))
+				break;
+		}
+	}
+	return rc;
+}
+
+static int
+fp_lookup_nvme_discover(int hba_num, int fd)
+{
+	unsigned char response[4096], *pn, *nn;
+	char spn[256];
+	size_t resp_len;
+	int rc;
+
+	resp_len = sizeof(response);
+	memset(response, 0, sizeof(response));
+	rc = fp_ns_gnn_ff(hba_num, fd, 0x28, 0x04, response, resp_len);
+	if (rc > 0) {
+		int len = rc;
+		unsigned char *acc_iu;
+
+		acc_iu = response + sizeof(struct fc_ct_hdr);
+		len -= sizeof(struct fc_ct_hdr);
+		while (len) {
+			uint8_t control = acc_iu[0];
+			uint32_t did;
+
+			acc_iu++;
+			did = ntoh24(acc_iu);
+			printf("host%d: nvme discover service id %06lx\n",
+			       hba_num, did);
+			acc_iu += 3;
+			len -= 4;
+			if ((control & 0x4f))
+				break;
+		}
+	}
+	return rc;
+}
+
+static int
+fp_lookup_nvme_target(int hba_num, int fd)
+{
+	unsigned char response[4096], *pn, *nn;
+	char spn[256];
+	size_t resp_len;
+	int rc;
+
+	resp_len = sizeof(response);
+	memset(response, 0, sizeof(response));
+	rc = fp_ns_gnn_ff(hba_num, fd, 0x28, 0x01, response, resp_len);
+	if (rc > 0) {
+		int len = rc;
+		unsigned char *acc_iu;
+
+		acc_iu = response + sizeof(struct fc_ct_hdr);
+		len -= sizeof(struct fc_ct_hdr);
+		while (len) {
+			uint8_t control = acc_iu[0];
+			uint32_t did;
+
+			acc_iu++;
+			did = ntoh24(acc_iu);
+			printf("host%d: nvme target service id %06lx\n",
+			       hba_num, did);
+			acc_iu += 3;
+			len -= 4;
+			if ((control & 0x4f))
+				break;
+		}
+	}
+	return rc;
+}
+
+static int
+find_nvme(int hba_num, fc_fid_t hba_did)
+{
+	int wka_num, rc;
+	int wka_fd, port_did;
+	fc_fid_t did;
+	char bsg_dev[80];
+
+	wka_num = fp_find_did(hba_num, FC_WKA_MANAGEMENT_SERVER);
+	if (wka_num < 0) {
+		fprintf(stderr, "host%d: No remote port found for WKA %06lx\n",
+			hba_num, (unsigned long)FC_WKA_DIRECTORY_SERVICE);
+		return -ENXIO;
+	}
+
+	sprintf(bsg_dev, "/dev/bsg/rport-%d:0-%d", hba_num, wka_num);
+	wka_fd = open(bsg_dev, O_RDWR);
+	if (wka_fd < 0) {
+		fprintf(stderr, "host%d: Cannot open bsg device %s: %s\n",
+			hba_num, bsg_dev, strerror(errno));
+		return -ENODEV;
+	}
+
+	rc = fp_lookup_nvme_hosts(fp_hba, wka_fd);
+	if (rc < 0) {
+		fprintf(stderr, "host%d: failed to lookup nvme hosts\n",
+			hba_num);
+		goto out;
+	}
+
+	rc = fp_lookup_nvme_discover(fp_hba, wka_fd);
+	if (rc < 0) {
+		fprintf(stderr, "host%d: failed to lookup nvme discovery\n",
+			hba_num);
+		goto out;
+	}
+
+	rc = fp_lookup_nvme_target(fp_hba, wka_fd);
+	if (rc < 0) {
+		fprintf(stderr, "host%d: failed to lookup nvme targets\n",
+			hba_num);
+	}
+
+out:
+	close(wka_fd);
+	return rc;
+}
+
 /*
  * Main.
  */
@@ -349,7 +584,7 @@ int main(int argc, char *argv[])
 	if (verbose)
 		printf("host%d: DID %06x\n", fp_hba, fp_hba_did);
 
-	walk_ns(fp_hba, fp_hba_did);
+	find_nvme(fp_hba, fp_hba_did);
 
 	return rc;
 }
