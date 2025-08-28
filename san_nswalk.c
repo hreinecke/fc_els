@@ -221,8 +221,7 @@ fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 	memset(response, 0, sizeof(response));
 	rc = fp_ns_get_nxt(hba_num, fd, start_did, response, resp_len);
 	if (rc > 0) {
-		unsigned char *pn, *spn, *nn, *snn, *fc4_words;
-		uint64_t fc4[5];
+		unsigned char *pn, *spn, *nn, *snn, *fc4;
 		int spn_length, snn_length, i;
 
 		printf("GA_NXT length %d\n", resp_len);
@@ -248,7 +247,6 @@ fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 		if (resp_len < 256)
 			return 0;
 		spn_length = pn[8];
-		printf("symbolic portname length %d\n", spn_length);
 		spn = pn + 9;
 		memset(rport->spn, 0, 256);
 		memcpy(rport->spn, &response[29], response[28]);
@@ -264,24 +262,28 @@ fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 			return 0;
 		snn_length = nn[8];
 		snn = nn + 9;
-		printf("symbolic nodename length %d\n", snn_length);
 		memset(rport->snn, 0, 256);
 		memcpy(rport->snn, snn, snn_length);
 		if (snn_length > 0)
 			printf("symbolic nodename '%s'\n", snn);
 		resp_len -= 256;
-		fc4_words = nn + 8 + 256 + 28;
-		fc4[0] = ntoh64(fc4_words);
-		fc4_words += 8;
-		fc4[1] = ntoh64(fc4_words);
-		fc4_words += 8;
-		fc4[2] = ntoh64(fc4_words);
-		fc4_words += 8;
-		fc4[3] = ntoh64(fc4_words);
+		fc4 = nn + 8 + 256 + 28;
 		printf("FC-4 types:\n");
-		for (i = 0; i < 4; i++)
-			printf("\t%016llx\n", fc4[i]);
+		for (i = 0; i < 8; i++) {
+			uint32_t bits;
 
+			bits = ntoh32(fc4);
+			printf("\t%08llx: ", bits);
+			if (i == 0 && ((bits >> 8) & 0xf))
+				printf("fcp\n");
+			else if (i == 1 && (bits >> 8) & 0xf)
+				printf("nvme\n");
+			else if (i == 3 && (bits & 0xf))
+				printf("ct\n");
+			else
+				printf("\n");
+			fc4 += 4;
+		}
 	}
 	return rc;
 }

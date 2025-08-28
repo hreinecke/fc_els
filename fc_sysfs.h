@@ -46,6 +46,10 @@ typedef uint64_t fc_wwn_t;    /* world-wide name */
 	((uint64_t)(v[4]) << 24) | ((uint64_t)(v[5]) << 16) |	\
 	((uint64_t)(v[6]) <<  8) | ((uint64_t)(v[7]))
 
+#define ntoh32(v) \
+	((uint32_t)(v[0]) << 24) | ((uint32_t)(v[1]) << 16) |	\
+	((uint32_t)(v[2]) <<  8) | ((uint32_t)(v[3]))
+
 /**
  * fp_find_hba - return the FC ID of a FC HBA
  * @hba_num: sysfs number of the HBA to query
