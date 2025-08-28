@@ -40,14 +40,10 @@ typedef uint8_t u8;
 
 #include "fc_sysfs.h"
 
-static const char *cmdname = "san_resync";
+static const char *cmdname = "san_nswalk";
 
 static int els_timeout = DEF_ELS_TIMEOUT;
 static int fp_hba = -1;	/* number of fc_host to be used */
-static void *root = NULL;
-static int system_errors;
-static int els_errors;
-static int port_errors;
 static int verbose;
 
 static void
@@ -124,7 +120,7 @@ fp_options(int argc, char *argv[])
  */
 static int
 fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
-	      unsigned char *response, size_t *resp_len)
+	      unsigned char *response, size_t resp_len)
 {
 	struct ct_ga_nxt {
 		struct fc_ct_hdr hdr;
@@ -144,7 +140,7 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	ct.hdr.ct_fs_subtype = FC_MS_SUBTYPE_UNZONE;
 	ct.hdr.ct_options = 0;
 	ct.hdr.ct_cmd = htons(FC_NS_GA_NXT);
-	ct.hdr.ct_mr_size = *resp_len;
+	ct.hdr.ct_mr_size = resp_len;
 	hton24(ct.port_id, did);
 	cdb.msgcode = FC_BSG_RPT_CT;
 	memcpy(&cdb.rqst_data.r_ct.preamble_word0, &ct.hdr,
@@ -157,20 +153,19 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	sg_io.request = (uintptr_t)&cdb;
 	sg_io.dout_xfer_len = sizeof(ct);
 	sg_io.dout_xferp = (uintptr_t)&ct;
-	sg_io.din_xfer_len = *resp_len;
+	sg_io.din_xfer_len = resp_len;
 	sg_io.din_xferp = (uintptr_t)response;
 	sg_io.max_response_len = sizeof(reply);
 	sg_io.response = (uintptr_t)&reply;
 	sg_io.timeout = 1000;	/* millisecond */
 	memset(&reply, 0, sizeof(reply));
-	memset(response, 0, *resp_len);
+	memset(response, 0, resp_len);
 
 	rc = ioctl(fd, SG_IO, &sg_io);
 	if (rc < 0) {
 		fprintf(stderr, "host%d: GA_NXT error: %s\n",
 			hba_num, strerror(errno));
-		system_errors++;
-		return rc;
+		return -errno;
 	}
 
 	cmd = ((response[8]<<8) | response[9]) & 0xffff;
@@ -179,18 +174,18 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 			fprintf(stderr, "host%d: GA_NXT rejected, "
 				"reason %02x/%02x\n",
 				hba_num, response[13], response[14]);
-			els_errors++;
-			rc = EAGAIN;
+			rc = -EAGAIN;
 		} else {
 			fprintf(stderr, "host%d: GA_NXT result %x\n",
 				hba_num, cmd);
-			els_errors++;
-			rc = ECOMM;
+			rc = -ECOMM;
 		}
 	} else {
 		actual_len = reply.reply_payload_rcv_len;
-		if (actual_len < *resp_len)
-			*resp_len = actual_len * 8;
+		if (actual_len < resp_len)
+			rc = actual_len * 8;
+		else
+			rc = resp_len;
 	}
 	return rc;
 }
@@ -216,8 +211,8 @@ fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 
 	resp_len = sizeof(response);
 	memset(response, 0, sizeof(response));
-	rc = fp_ns_get_nxt(hba_num, fd, start_did, response, &resp_len);
-	if (rc == 0) {
+	rc = fp_ns_get_nxt(hba_num, fd, start_did, response, resp_len);
+	if (rc > 0) {
 		unsigned char *pn, *spn, *nn, *snn, *fc4_words;
 		uint64_t fc4[5];
 		int spn_length, snn_length, i;
@@ -230,8 +225,7 @@ fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 		if (resp_len < 20) {
 			fprintf(stderr, "host%d: GA_NXT response len %d\n",
 				hba_num, (int)resp_len);
-			els_errors++;
-			return -1;
+			return -ECOMM;
 		}
 		rport->hba = hba_num;
 		rport->did = ((response[17] << 16) & 0xff0000) |
@@ -298,7 +292,6 @@ walk_ns(int hba_num, fc_fid_t hba_did)
 	if (wka_num < 0) {
 		fprintf(stderr, "host%d: No remote port found for WKA %06lx\n",
 			hba_num, (unsigned long)FC_WKA_DIRECTORY_SERVICE);
-		system_errors++;
 		return -ENXIO;
 	}
 
@@ -307,7 +300,6 @@ walk_ns(int hba_num, fc_fid_t hba_did)
 	if (wka_fd < 0) {
 		fprintf(stderr, "host%d: Cannot open bsg device %s: %s\n",
 			hba_num, bsg_dev, strerror(errno));
-		system_errors++;
 		return -ENODEV;
 	}
 
