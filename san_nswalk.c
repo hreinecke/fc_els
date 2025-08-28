@@ -86,6 +86,12 @@ static int verbose;
 		p[7] = (u_char) (v) & 0xFF;		\
 	} while (0)
 
+#define ntoh64(v) \
+	((uint64_t)(v[0]) << 56) | ((uint64_t)(v[1]) << 48) |	\
+	((uint64_t)(v[2]) << 40) | ((uint64_t)(v[3]) << 32) |	\
+	((uint64_t)(v[4]) << 24) | ((uint64_t)(v[5]) << 16) |	\
+	((uint64_t)(v[6]) <<  8) | ((uint64_t)(v[7]))
+
 static void
 fp_usage()
 {
@@ -337,7 +343,7 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	} else {
 		actual_len = reply.reply_payload_rcv_len;
 		if (actual_len < *resp_len)
-			*resp_len = actual_len;
+			*resp_len = actual_len * 8;
 	}
 	return rc;
 }
@@ -348,13 +354,16 @@ struct rport_type_t {
 	fc_fid_t did;
 	fc_wwn_t wwpn;
 	fc_wwn_t wwnn;
+	char spn[256];
+	char snn[256];
 };
 
 static int
 fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 		    struct rport_type_t *rport)
 {
-	unsigned char response[4096];
+	unsigned char response[4096], *pn, *nn;
+	char spn[256];
 	size_t resp_len;
 	int rc;
 
@@ -362,27 +371,68 @@ fp_lookup_next_port(int hba_num, int fd, fc_fid_t start_did,
 	memset(response, 0, sizeof(response));
 	rc = fp_ns_get_nxt(hba_num, fd, start_did, response, &resp_len);
 	if (rc == 0) {
+		unsigned char *pn, *spn, *nn, *snn, *fc4_words;
+		uint64_t fc4[5];
+		int spn_length, snn_length, i;
+
+		printf("GA_NXT length %d\n", resp_len);
 		rport->rport = -1;
-		if (resp_len > 28) {
-			rport->hba = hba_num;
-			rport->did = ((response[17] << 16) & 0xff0000) |
-				((response[18] << 8) & 0x00ff00) |
-				(response[19] & 0x0000ff);
-			rport->wwpn = ((uint64_t)response[20] << 56) |
-				((uint64_t)response[21] << 48) |
-				((uint64_t)response[22] << 40) |
-				((uint64_t)response[23] << 32) |
-				((uint64_t)response[24] << 24) |
-				((uint64_t)response[25] << 16) |
-				((uint64_t)response[26] <<  8) |
-				((uint64_t)response[27]);
-		} else {
+		rport->did = 0;
+		rport->wwpn = 0;
+		rport->wwnn = 0;
+		if (resp_len < 20) {
 			fprintf(stderr, "host%d: GA_NXT response len %d\n",
 				hba_num, (int)resp_len);
 			els_errors++;
-			rport->did = 0;
-			rport->wwpn = 0;
+			return -1;
 		}
+		rport->hba = hba_num;
+		rport->did = ((response[17] << 16) & 0xff0000) |
+			((response[18] << 8) & 0x00ff00) |
+			(response[19] & 0x0000ff);
+		resp_len -= 20;
+		if (resp_len < 8)
+			return 0;
+		pn = &response[20];
+		rport->wwpn = ntoh64(pn);
+		resp_len -= 8;
+		if (resp_len < 256)
+			return 0;
+		spn_length = pn[8];
+		printf("symbolic portname length %d\n", spn_length);
+		spn = pn + 9;
+		memset(rport->spn, 0, 256);
+		memcpy(rport->spn, &response[29], response[28]);
+		if (spn_length > 0)
+			printf("symbolic portname '%s'\n", spn);
+		resp_len -= 256;
+		if (resp_len < 8)
+			return 0;
+		nn = pn + 8 + 256;
+		rport->wwnn = ntoh64(nn);
+		resp_len -= 8;
+		if (resp_len < 256)
+			return 0;
+		snn_length = nn[8];
+		snn = nn + 9;
+		printf("symbolic nodename length %d\n", snn_length);
+		memset(rport->snn, 0, 256);
+		memcpy(rport->snn, snn, snn_length);
+		if (snn_length > 0)
+			printf("symbolic nodename '%s'\n", snn);
+		resp_len -= 256;
+		fc4_words = nn + 8 + 256 + 28;
+		fc4[0] = ntoh64(fc4_words);
+		fc4_words += 8;
+		fc4[1] = ntoh64(fc4_words);
+		fc4_words += 8;
+		fc4[2] = ntoh64(fc4_words);
+		fc4_words += 8;
+		fc4[3] = ntoh64(fc4_words);
+		printf("FC-4 types:\n");
+		for (i = 0; i < 4; i++)
+			printf("\t%016llx\n", fc4[i]);
+
 	}
 	return rc;
 }
@@ -424,7 +474,8 @@ walk_ns(int hba_num, fc_fid_t hba_did)
 				hba_num, did);
 			break;
 		}
-		printf("host %d: found rport %06lx\n", rport->did);
+		printf("host %06lx: found rport %06lx nn-0x%08llx:pn-0x%08llx\n",
+		       hba_did, rport->did, rport->wwnn, rport->wwpn);
 		did = rport->did;
 	} while (did != hba_did);
 	free(rport);
