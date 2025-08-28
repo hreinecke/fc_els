@@ -127,6 +127,7 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 		uint8_t reserved;
 		uint8_t port_id[3];
 	} ct;
+	struct fc_ct_hdr *acc, *rej;
 	struct fc_bsg_request cdb;
 	struct fc_bsg_reply reply;
 	struct sg_io_v4 sg_io;
@@ -140,7 +141,7 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	ct.hdr.ct_fs_subtype = FC_MS_SUBTYPE_UNZONE;
 	ct.hdr.ct_options = 0;
 	ct.hdr.ct_cmd = htons(FC_NS_GA_NXT);
-	ct.hdr.ct_mr_size = resp_len;
+	ct.hdr.ct_mr_size = htons(resp_len / 8);
 	hton24(ct.port_id, did);
 	cdb.msgcode = FC_BSG_RPT_CT;
 	memcpy(&cdb.rqst_data.r_ct.preamble_word0, &ct.hdr,
@@ -168,12 +169,14 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 		return -errno;
 	}
 
-	cmd = ((response[8]<<8) | response[9]) & 0xffff;
+	acc = (struct fc_ct_hdr *)response;
+	cmd = htons(acc->ct_cmd);
 	if (cmd != FC_FS_ACC) {
 		if (cmd == FC_FS_RJT) {
+			rej = (struct fc_ct_hdr *)response;
 			fprintf(stderr, "host%d: GA_NXT rejected, "
 				"reason %02x/%02x\n",
-				hba_num, response[13], response[14]);
+				hba_num, rej->ct_reason, rej->ct_explan);
 			rc = -EAGAIN;
 		} else {
 			fprintf(stderr, "host%d: GA_NXT result %x\n",
@@ -181,6 +184,11 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 			rc = -ECOMM;
 		}
 	} else {
+		unsigned int residual = htons(acc->ct_mr_size) * 8;
+
+		if (residual > 0)
+			fprintf(stderr, "host%d: GA_NXT missing %u bytes\n",
+				hba_num, residual);
 		actual_len = reply.reply_payload_rcv_len;
 		if (actual_len < resp_len)
 			rc = actual_len * 8;
@@ -308,7 +316,7 @@ walk_ns(int hba_num, fc_fid_t hba_did)
 	did = hba_did;
 	do {
 		rc = fp_lookup_next_port(fp_hba, wka_fd, did, rport);
-		if (rc) {
+		if (rc < 0) {
 			fprintf(stderr, "host%d: failed to lookup port %06lx\n",
 				hba_num, did);
 			break;
