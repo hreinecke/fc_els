@@ -115,6 +115,73 @@ fp_options(int argc, char *argv[])
 	return;
 }
 
+static int
+bsg_ct_ioctl(int hba_num, int fd, struct fc_ct_hdr *ct, size_t ct_len,
+	     void *response, size_t resp_len)
+{
+	struct fc_bsg_request cdb;
+	struct fc_bsg_reply reply;
+	struct sg_io_v4 sg_io;
+	struct fc_ct_hdr *resp_hdr, *rej;
+	int resp_cmd, cmd = ct->ct_cmd, rc;
+
+	memset((char *)&cdb, 0, sizeof(cdb));
+	memset((char *)&reply, 0, sizeof(reply));
+	cdb.msgcode = FC_BSG_RPT_CT;
+	memcpy(&cdb.rqst_data.r_ct.preamble_word0, ct,
+	       3 * sizeof(uint32_t));
+
+	sg_io.guard = 'Q';
+	sg_io.protocol = BSG_PROTOCOL_SCSI;
+	sg_io.subprotocol = BSG_SUB_PROTOCOL_SCSI_TRANSPORT;
+	sg_io.request_len = sizeof(cdb);
+	sg_io.request = (uintptr_t)&cdb;
+	sg_io.dout_xfer_len = ct_len;
+	sg_io.dout_xferp = (uintptr_t)ct;
+	sg_io.din_xfer_len = resp_len;
+	sg_io.din_xferp = (uintptr_t)response;
+	sg_io.max_response_len = sizeof(reply);
+	sg_io.response = (uintptr_t)&reply;
+	sg_io.timeout = 1000;	/* millisecond */
+	memset(&reply, 0, sizeof(reply));
+	memset(response, 0, resp_len);
+
+	rc = ioctl(fd, SG_IO, &sg_io);
+	if (rc < 0) {
+		fprintf(stderr, "host%d: cmd %u error: %s\n",
+			hba_num, cmd, strerror(errno));
+		return -errno;
+	}
+
+	resp_hdr = (struct fc_ct_hdr *)response;
+	resp_cmd = htons(resp_hdr->ct_cmd);
+	if (resp_cmd != FC_FS_ACC) {
+		if (resp_cmd == FC_FS_RJT) {
+			rej = (struct fc_ct_hdr *)response;
+			fprintf(stderr, "host%d: CT cmd %u rejected, "
+				"reason %02x/%02x\n",
+				hba_num, cmd, rej->ct_reason, rej->ct_explan);
+			rc = -EAGAIN;
+		} else {
+			fprintf(stderr, "host%d: CT cmd %u result %x\n",
+				hba_num, cmd, resp_cmd);
+			rc = -ECOMM;
+		}
+	} else {
+		unsigned int residual = htons(resp_hdr->ct_mr_size) * 8;
+		int actual_len = reply.reply_payload_rcv_len;
+
+		if (residual > 0)
+			fprintf(stderr, "host%d: CT cmd %u missing %u bytes\n",
+				hba_num, cmd, residual);
+		if (actual_len < resp_len)
+			rc = actual_len * 8;
+		else
+			rc = resp_len;
+	}
+	return rc;
+}
+
 /*
  * Query unzoned name server.
  */
@@ -127,14 +194,7 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 		uint8_t reserved;
 		uint8_t port_id[3];
 	} ct;
-	struct fc_ct_hdr *acc, *rej;
-	struct fc_bsg_request cdb;
-	struct fc_bsg_reply reply;
-	struct sg_io_v4 sg_io;
-	size_t actual_len;
-	int cmd, rc = 0;
 
-	memset((char *)&cdb, 0, sizeof(cdb));
 	memset(&ct, 0, sizeof(ct));
 	ct.hdr.ct_rev = FC_CT_REV;
 	ct.hdr.ct_fs_type = FC_FST_MGMT;
@@ -143,59 +203,9 @@ fp_ns_get_nxt(int hba_num, int fd, fc_fid_t did,
 	ct.hdr.ct_cmd = htons(FC_NS_GA_NXT);
 	ct.hdr.ct_mr_size = htons(resp_len / 8);
 	hton24(ct.port_id, did);
-	cdb.msgcode = FC_BSG_RPT_CT;
-	memcpy(&cdb.rqst_data.r_ct.preamble_word0, &ct.hdr,
-	       3 * sizeof(uint32_t));
 
-	sg_io.guard = 'Q';
-	sg_io.protocol = BSG_PROTOCOL_SCSI;
-	sg_io.subprotocol = BSG_SUB_PROTOCOL_SCSI_TRANSPORT;
-	sg_io.request_len = sizeof(cdb);
-	sg_io.request = (uintptr_t)&cdb;
-	sg_io.dout_xfer_len = sizeof(ct);
-	sg_io.dout_xferp = (uintptr_t)&ct;
-	sg_io.din_xfer_len = resp_len;
-	sg_io.din_xferp = (uintptr_t)response;
-	sg_io.max_response_len = sizeof(reply);
-	sg_io.response = (uintptr_t)&reply;
-	sg_io.timeout = 1000;	/* millisecond */
-	memset(&reply, 0, sizeof(reply));
-	memset(response, 0, resp_len);
-
-	rc = ioctl(fd, SG_IO, &sg_io);
-	if (rc < 0) {
-		fprintf(stderr, "host%d: GA_NXT error: %s\n",
-			hba_num, strerror(errno));
-		return -errno;
-	}
-
-	acc = (struct fc_ct_hdr *)response;
-	cmd = htons(acc->ct_cmd);
-	if (cmd != FC_FS_ACC) {
-		if (cmd == FC_FS_RJT) {
-			rej = (struct fc_ct_hdr *)response;
-			fprintf(stderr, "host%d: GA_NXT rejected, "
-				"reason %02x/%02x\n",
-				hba_num, rej->ct_reason, rej->ct_explan);
-			rc = -EAGAIN;
-		} else {
-			fprintf(stderr, "host%d: GA_NXT result %x\n",
-				hba_num, cmd);
-			rc = -ECOMM;
-		}
-	} else {
-		unsigned int residual = htons(acc->ct_mr_size) * 8;
-
-		if (residual > 0)
-			fprintf(stderr, "host%d: GA_NXT missing %u bytes\n",
-				hba_num, residual);
-		actual_len = reply.reply_payload_rcv_len;
-		if (actual_len < resp_len)
-			rc = actual_len * 8;
-		else
-			rc = resp_len;
-	}
-	return rc;
+	return bsg_ct_ioctl(hba_num, fd, &ct.hdr, sizeof(struct ct_ga_nxt),
+			  response, resp_len);
 }
 
 static int
@@ -211,14 +221,7 @@ fp_ns_gnn_ff(int hba_num, int fd, uint8_t fc4_type, uint8_t fc4_feat,
 		uint8_t fc4_feat;
 		uint8_t fc4_type;
 	} ct;
-	struct fc_ct_hdr *acc, *rej;
-	struct fc_bsg_request cdb;
-	struct fc_bsg_reply reply;
-	struct sg_io_v4 sg_io;
-	size_t actual_len;
-	int cmd, rc = 0;
 
-	memset((char *)&cdb, 0, sizeof(cdb));
 	memset(&ct, 0, sizeof(ct));
 	ct.hdr.ct_rev = FC_CT_REV;
 	ct.hdr.ct_fs_type = FC_FST_MGMT;
@@ -228,59 +231,9 @@ fp_ns_gnn_ff(int hba_num, int fd, uint8_t fc4_type, uint8_t fc4_feat,
 	ct.hdr.ct_mr_size = htons(resp_len / 8);
 	ct.fc4_type = fc4_type;
 	ct.fc4_feat = fc4_feat;
-	cdb.msgcode = FC_BSG_RPT_CT;
-	memcpy(&cdb.rqst_data.r_ct.preamble_word0, &ct.hdr,
-	       3 * sizeof(uint32_t));
 
-	sg_io.guard = 'Q';
-	sg_io.protocol = BSG_PROTOCOL_SCSI;
-	sg_io.subprotocol = BSG_SUB_PROTOCOL_SCSI_TRANSPORT;
-	sg_io.request_len = sizeof(cdb);
-	sg_io.request = (uintptr_t)&cdb;
-	sg_io.dout_xfer_len = sizeof(ct);
-	sg_io.dout_xferp = (uintptr_t)&ct;
-	sg_io.din_xfer_len = resp_len;
-	sg_io.din_xferp = (uintptr_t)response;
-	sg_io.max_response_len = sizeof(reply);
-	sg_io.response = (uintptr_t)&reply;
-	sg_io.timeout = 1000;	/* millisecond */
-	memset(&reply, 0, sizeof(reply));
-	memset(response, 0, resp_len);
-
-	rc = ioctl(fd, SG_IO, &sg_io);
-	if (rc < 0) {
-		fprintf(stderr, "host%d: GA_NXT error: %s\n",
-			hba_num, strerror(errno));
-		return -errno;
-	}
-
-	acc = (struct fc_ct_hdr *)response;
-	cmd = htons(acc->ct_cmd);
-	if (cmd != FC_FS_ACC) {
-		if (cmd == FC_FS_RJT) {
-			rej = (struct fc_ct_hdr *)response;
-			fprintf(stderr, "host%d: GA_NXT rejected, "
-				"reason %02x/%02x\n",
-				hba_num, rej->ct_reason, rej->ct_explan);
-			rc = -EAGAIN;
-		} else {
-			fprintf(stderr, "host%d: GA_NXT result %x\n",
-				hba_num, cmd);
-			rc = -ECOMM;
-		}
-	} else {
-		unsigned int residual = htons(acc->ct_mr_size) * 8;
-
-		if (residual > 0)
-			fprintf(stderr, "host%d: GA_NXT missing %u bytes\n",
-				hba_num, residual);
-		actual_len = reply.reply_payload_rcv_len;
-		if (actual_len < resp_len)
-			rc = actual_len * 8;
-		else
-			rc = resp_len;
-	}
-	return rc;
+	return bsg_ct_ioctl(hba_num, fd, &ct.hdr, sizeof(struct ct_gnn_ff),
+			    response, resp_len);
 }
 
 struct rport_type_t {
